@@ -1,4 +1,6 @@
+import os
 from xml.dom import minidom
+
 from vm_writer import VMWriter
 from symbol_table import SymbolTable
 
@@ -8,11 +10,17 @@ KEYWORD_CONSTANTS = ["true", "false", "null", "this"]
 
 
 class CompilationEngine:
-    def __init__(self, basename, tokenizer, vm_writer):
-        self.basename = basename
+    def __init__(self, tokenizer, basename, vm_dir):
         self.tokenizer = tokenizer
-        self.vm_writer = vm_writer
+        self.basename = basename
+        self.vm_dir = vm_dir
+
+        vm_fn = os.path.join(vm_dir, basename + ".vm")
+        self.vm_writer = VMWriter(vm_fn)
+
         self.parse_tree_root = minidom.Document()
+        self.class_method_names = []
+        self.vm_label_index = 0
 
     def _create_tag(self, parent_tag, child, child_text):
         child_tag = self.parse_tree_root.createElement(child)
@@ -23,6 +31,23 @@ class CompilationEngine:
             child_tag.appendChild(child_text)
 
         return child_tag
+
+    def _get_mem_segment(self, var_kind) -> str:
+        if var_kind == "static":
+            return var_kind
+        elif var_kind == "field":
+            raise ValueError("Unimplemented")
+        elif var_kind == "arg":
+            return "argument"
+        elif var_kind == "var":
+            return "local"
+        else:
+            raise ValueError(f"Invalid variable kind: {var_kind}")
+
+    def _get_vm_label(self, suffix: str) -> str:
+        label = self.basename + "_" + suffix + str(self.vm_label_index)
+        self.vm_label_index += 1
+        return label.upper()
 
     def compile_class(self, token, token_type):
         # intialize symbol table
@@ -51,6 +76,12 @@ class CompilationEngine:
 
         self._create_tag(class_tag, token_type, token)
 
+        self.symbol_table.write_symbol_tables(
+            os.path.join(self.vm_dir, "symbol_tables")
+        )
+
+        self.vm_writer.close()
+
     def compile_class_var_dec(self, class_tag, token, token_type):
         if token not in ["static", "field"]:
             # done with class var decs
@@ -58,7 +89,7 @@ class CompilationEngine:
 
         else:
             class_var_dec_tag = self._create_tag(class_tag, "classVarDec", None)
-            
+
             # kind
             var_kind = token
             self._create_tag(class_var_dec_tag, token_type, var_kind)
@@ -87,24 +118,29 @@ class CompilationEngine:
             # No more subroutines
             return token, token_type
 
+        subroutine_type = token
+
         subroutine_tag = self.parse_tree_root.createElement("subroutineDec")
         parent_tag.appendChild(subroutine_tag)
-        self._create_tag(subroutine_tag, token_type, token)
+        self._create_tag(subroutine_tag, token_type, subroutine_type)
 
         self.symbol_table.start_subroutine()
 
-        if token == "function" or token == "method":
+        if subroutine_type == "function" or subroutine_type == "method":
             # type
-            token, token_type = self.tokenizer.advance()
-            self._create_tag(subroutine_tag, token_type, token)
-        elif token == "constructor":
+            return_type, token_type = self.tokenizer.advance()
+            self._create_tag(subroutine_tag, token_type, return_type)
+        elif subroutine_type == "constructor":
             # className
-            token, token_type = self.tokenizer.advance()
-            self._create_tag(subroutine_tag, token_type, token)
+            class_name, token_type = self.tokenizer.advance()
+            self._create_tag(subroutine_tag, token_type, class_name)
 
         # subroutineName
         subroutine_name, token_type = self.tokenizer.advance()
         self._create_tag(subroutine_tag, token_type, subroutine_name)
+
+        if subroutine_type == "method":
+            self.class_method_names.append(subroutine_name)
 
         # '('
         token, token_type = self.tokenizer.advance()
@@ -113,14 +149,14 @@ class CompilationEngine:
         # Add empty text to tag to force minidom to create closing tag
         parameter_list_tag = self._create_tag(subroutine_tag, "parameterList", "")
 
+        # TODO: Is n_parameters actually needed? Unless want to handle errors for
+        # incorrect number of args passed to a function?
+
         # zero or more parameters
         token, token_type = self.tokenizer.advance()
         token, token_type, n_parameters = self.compile_parameter_list(
             parameter_list_tag, token, token_type
         )
-
-        # TODO: This probably won't work correctly for writing constructors. Or methods?
-        self.vm_writer.write_function(self.basename+"."+subroutine_name, n_parameters)
 
         # ')'
         self._create_tag(subroutine_tag, token_type, token)
@@ -132,7 +168,13 @@ class CompilationEngine:
 
         # zero or more varDec
         token, token_type = self.tokenizer.advance()
-        token, token_type = self.compile_var_dec(subroutine_body_tag, token, token_type)
+        token, token_type, n_locals = self.compile_var_dec(
+            subroutine_body_tag, token, token_type
+        )
+
+        # TODO: This probably won't work correctly for writing constructors. Or methods?
+        # Need to add reference to self as another "local"
+        self.vm_writer.write_function(self.basename + "." + subroutine_name, n_locals)
 
         # statement
         statements_tag = self._create_tag(subroutine_body_tag, "statements", None)
@@ -155,11 +197,15 @@ class CompilationEngine:
             n_parameters += 1
 
             # type
-            self._create_tag(parent_tag, token_type, token)
+            var_type = token
+            self._create_tag(parent_tag, token_type, var_type)
 
             # varName
-            token, token_type = self.tokenizer.advance()
-            self._create_tag(parent_tag, token_type, token)
+            var_name, token_type = self.tokenizer.advance()
+            self._create_tag(parent_tag, token_type, var_name)
+
+            # add arg to subroutine-level symbol table
+            self.symbol_table.define(var_name, var_type, "arg")
 
             token, token_type = self.tokenizer.advance()
             if token == ",":
@@ -169,23 +215,27 @@ class CompilationEngine:
 
         return token, token_type, n_parameters
 
-    def compile_var_dec(self, parent_tag, token, token_type):
+    def compile_var_dec(self, parent_tag, token, token_type, n_locals=0):
         if token != "var":
             # end of varDecs
-            return token, token_type
+            return token, token_type, n_locals
 
         var_dec_tag = self._create_tag(parent_tag, "varDec", None)
         self._create_tag(var_dec_tag, token_type, token)
 
         # type
-        token, token_type = self.tokenizer.advance()
-        self._create_tag(var_dec_tag, token_type, token)
+        var_type, token_type = self.tokenizer.advance()
+        self._create_tag(var_dec_tag, token_type, var_type)
 
         # one or more varNames
         while token != ";":
             # varName
-            token, token_type = self.tokenizer.advance()
-            self._create_tag(var_dec_tag, token_type, token)
+            var_name, token_type = self.tokenizer.advance()
+            self._create_tag(var_dec_tag, token_type, var_name)
+
+            # add var to subroutine-level symbol table
+            self.symbol_table.define(var_name, var_type, "var")
+            n_locals += 1
 
             # "," or ";"
             token, token_type = self.tokenizer.advance()
@@ -193,7 +243,7 @@ class CompilationEngine:
 
         # end of varDecs, or another varDec
         token, token_type = self.tokenizer.advance()
-        return self.compile_var_dec(parent_tag, token, token_type)
+        return self.compile_var_dec(parent_tag, token, token_type, n_locals)
 
     def compile_statements(self, parent_tag, token, token_type):
         if token == "}":
@@ -235,7 +285,7 @@ class CompilationEngine:
         self._create_tag(parent_tag, token_type, token)
 
         if token == "(":
-            function_call_name = self.basename+"."+subroutine_name
+            function_call_name = self.basename + "." + subroutine_name
 
             # start expressionList
             token, token_type = self.tokenizer.advance()
@@ -251,7 +301,7 @@ class CompilationEngine:
             subroutine_name, token_type = self.tokenizer.advance()
             self._create_tag(parent_tag, token_type, subroutine_name)
 
-            function_call_name = class_name+"."+subroutine_name
+            function_call_name = class_name + "." + subroutine_name
 
             # '('
             token, token_type = self.tokenizer.advance()
@@ -271,7 +321,10 @@ class CompilationEngine:
         token, token_type = self.tokenizer.advance()
         self._create_tag(parent_tag, token_type, token)
 
+        if subroutine_name in self.class_method_names:
+            raise ValueError("Need to push reference to current object onto stack")
         self.vm_writer.write_call(function_call_name, n_expressions)
+        self.vm_writer.write_pop("temp", 0)
 
         token, token_type = self.tokenizer.advance()
         return token, token_type
@@ -281,8 +334,13 @@ class CompilationEngine:
         self._create_tag(parent_tag, token_type, token)
 
         # varName
-        token, token_type = self.tokenizer.advance()
-        self._create_tag(parent_tag, token_type, token)
+        var_name, token_type = self.tokenizer.advance()
+        self._create_tag(parent_tag, token_type, var_name)
+
+        # lookup var
+        var_kind, var_type, var_mem_index = self.symbol_table.lookup(var_name)
+        var_mem_segment = self._get_mem_segment(var_kind)
+        # TODO: Deal with var_types that are stored on heap? Objects? Strings? Arrays?
 
         token, token_type = self.tokenizer.advance()
         # check for array indexing
@@ -298,6 +356,9 @@ class CompilationEngine:
             self._create_tag(parent_tag, token_type, token)
             token, token_type = self.tokenizer.advance()
 
+            # TODO: Add some sort of offset to pointer of the base address of the array
+            # in order to access the approriate index?
+
         # '='
         self._create_tag(parent_tag, token_type, token)
 
@@ -310,15 +371,26 @@ class CompilationEngine:
         self._create_tag(parent_tag, token_type, token)
         token, token_type = self.tokenizer.advance()
 
+        # write expression value onto the address of the target variable
+        self.vm_writer.write_pop(var_mem_segment, var_mem_index)
+
         return token, token_type
 
     def compile_while(self, parent_tag, token, token_type):
+        # TODO: Implement program flow for while statements with labels, if-goto, etc.
+
+        # generate vm labels for while loop
+        loop_label = self._get_vm_label("WHILE_LOOP")
+        exit_label = self._get_vm_label("WHILE_EXIT")
+
         # while
         self._create_tag(parent_tag, token_type, token)
 
         # '('
         token, token_type = self.tokenizer.advance()
         self._create_tag(parent_tag, token_type, token)
+
+        self.vm_writer.write_label(loop_label)
 
         # expression
         token, token_type = self.tokenizer.advance()
@@ -327,6 +399,10 @@ class CompilationEngine:
 
         # ')' (end of expression)
         self._create_tag(parent_tag, token_type, token)
+
+        # negate expression result
+        self.vm_writer.write_unary_arithmetic("~")
+        self.vm_writer.write_if(exit_label)
 
         # '{'
         token, token_type = self.tokenizer.advance()
@@ -337,8 +413,14 @@ class CompilationEngine:
         statements_tag = self._create_tag(parent_tag, "statements", None)
         token, token_type = self.compile_statements(statements_tag, token, token_type)
 
+        # go back to top of while loop
+        self.vm_writer.write_goto(loop_label)
+
         # '}' (end of statements)
         self._create_tag(parent_tag, token_type, token)
+
+        # end of while loop
+        self.vm_writer.write_label(exit_label)
 
         token, token_type = self.tokenizer.advance()
         return token, token_type
@@ -357,6 +439,7 @@ class CompilationEngine:
             token, token_type = self.compile_expression(
                 expression_tag, token, token_type
             )
+            self.vm_writer.write_return()
 
         # ';' (end of returnStatement)
         self._create_tag(parent_tag, token_type, token)
@@ -365,6 +448,9 @@ class CompilationEngine:
         return token, token_type
 
     def compile_if(self, parent_tag, token, token_type):
+        else_label = self._get_vm_label("ELSE_BRANCH")
+        exit_label = self._get_vm_label("IF_EXIT")
+
         # if
         self._create_tag(parent_tag, token_type, token)
 
@@ -380,6 +466,10 @@ class CompilationEngine:
         # ')' (end of expression)
         self._create_tag(parent_tag, token_type, token)
 
+        # negate expression result
+        self.vm_writer.write_unary_arithmetic("~")
+        self.vm_writer.write_if(else_label)
+
         # '{'
         token, token_type = self.tokenizer.advance()
         self._create_tag(parent_tag, token_type, token)
@@ -392,7 +482,16 @@ class CompilationEngine:
         # '}' (end of statements)
         self._create_tag(parent_tag, token_type, token)
 
+        # skip past else statement, if present
+        self.vm_writer.write_goto(exit_label)
+
         token, token_type = self.tokenizer.advance()
+
+        # TODO: Is there a more clever way to do this? sometimes will have back to
+        # back labels here
+
+        # write else label to vm code, regardless of else presence/absence
+        self.vm_writer.write_label(else_label)
 
         if token == "else":
             # else branch of ifStatement
@@ -414,6 +513,8 @@ class CompilationEngine:
 
             token, token_type = self.tokenizer.advance()
 
+        self.vm_writer.write_label(exit_label)
+
         return token, token_type
 
     def compile_expression(self, parent_tag, token, token_type):
@@ -428,20 +529,13 @@ class CompilationEngine:
             token, token_type = self.tokenizer.advance()
             token, token_type = self.compile_term(parent_tag, token, token_type)
 
-            # Deal with OP_SYMBOLS outside of VM built-in capabilities
-            if op_symbol == "*":
-                self.vm_writer.write_call("Math.multiply", 2)
-            elif op_symbol == '/':
-                self.vm_writer.write_call("Math.divide", 2)
-            else:
-                self.vm_writer.write_arithmetic(op_symbol)
+            self.vm_writer.write_arithmetic(op_symbol)
 
         return token, token_type
 
     def compile_term(self, parent_tag, token, token_type):
         if token_type == "symbol":
             if token == ";" or token == ")":
-                # end of term
                 return token, token_type
 
             elif token == "(":
@@ -461,11 +555,15 @@ class CompilationEngine:
                 return token, token_type
 
             elif token in UNARY_OP_SYMBOLS:
+                unary_op_symbol = token
+
                 term_tag = self._create_tag(parent_tag, "term", None)
-                self._create_tag(term_tag, token_type, token)
+                self._create_tag(term_tag, token_type, unary_op_symbol)
                 token, token_type = self.tokenizer.advance()
 
                 token, token_type = self.compile_term(term_tag, token, token_type)
+
+                self.vm_writer.write_unary_arithmetic(unary_op_symbol)
                 return token, token_type
 
             else:
@@ -480,13 +578,14 @@ class CompilationEngine:
             token, token_type = self.tokenizer.advance()
 
             if token == ".":
-                # subroutine call
-                self._create_tag(term_tag, initial_token_type, initial_token)
+                # is a subroutine call
+                class_name = initial_token
+                self._create_tag(term_tag, initial_token_type, class_name)
                 self._create_tag(term_tag, token_type, token)
 
                 # subroutine name
-                token, token_type = self.tokenizer.advance()
-                self._create_tag(term_tag, token_type, token)
+                subroutine_name, token_type = self.tokenizer.advance()
+                self._create_tag(term_tag, token_type, subroutine_name)
 
                 # '('
                 token, token_type = self.tokenizer.advance()
@@ -494,13 +593,21 @@ class CompilationEngine:
 
                 expression_list_tag = self._create_tag(term_tag, "expressionList", "")
                 token, token_type = self.tokenizer.advance()
-                token, token_type = self.compile_expression_list(
+                token, token_type, n_expressions = self.compile_expression_list(
                     expression_list_tag, token, token_type
                 )
 
                 # ')' (end of expression list)
                 self._create_tag(term_tag, token_type, token)
                 token, token_type = self.tokenizer.advance()
+
+                if subroutine_name in self.class_method_names:
+                    raise ValueError(
+                        "Need to push reference to current object onto stack"
+                    )
+                self.vm_writer.write_call(
+                    class_name + "." + subroutine_name, n_expressions
+                )
 
             elif token == "[":
                 # array indexing
@@ -520,10 +627,24 @@ class CompilationEngine:
             elif token == ";" or token == ")" or token == "]" or token == ",":
                 # identifier only
                 self._create_tag(term_tag, initial_token_type, initial_token)
+                # look up var in symbol tables and push to stack
+                var_kind, var_type, var_mem_index = self.symbol_table.lookup(
+                    initial_token
+                )
+                var_mem_segment = self._get_mem_segment(var_kind)
+                self.vm_writer.write_push(var_mem_segment, var_mem_index)
+
                 return token, token_type
 
             elif token in OP_SYMBOLS:
                 self._create_tag(term_tag, initial_token_type, initial_token)
+
+                var_kind, var_type, var_mem_index = self.symbol_table.lookup(
+                    initial_token
+                )
+                var_mem_segment = self._get_mem_segment(var_kind)
+                self.vm_writer.write_push(var_mem_segment, var_mem_index)
+
                 return token, token_type
 
             else:
@@ -538,10 +659,18 @@ class CompilationEngine:
 
         elif token_type == "integerConstant":
             self._create_tag(term_tag, token_type, token)
-            self.vm_writer.write_push('constant', token)
+            self.vm_writer.write_push("constant", token)
             token, token_type = self.tokenizer.advance()
 
         elif token in KEYWORD_CONSTANTS:
+            if token == "true":
+                self.vm_writer.write_push("constant", 0)
+                self.vm_writer.write_unary_arithmetic("~")
+            elif token == "false":
+                self.vm_writer.write_push("constant", 0)
+            else:
+                raise ValueError(f"Unimplemented KEYWORD_CONSTANT: {token}")
+
             self._create_tag(term_tag, token_type, token)
             token, token_type = self.tokenizer.advance()
 
@@ -559,7 +688,7 @@ class CompilationEngine:
             if token == ")":
                 # end of expressionList
                 break
-            
+
             n_expressions += 1
             expression_tag = self._create_tag(parent_tag, "expression", None)
             token, token_type = self.compile_expression(

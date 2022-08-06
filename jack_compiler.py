@@ -3,8 +3,7 @@ import argparse
 
 from compilation_engine import CompilationEngine
 from tokenizer import Tokenizer
-# from symbol_table import SymbolTable
-from vm_writer import VMWriter
+
 
 class JackCompiler:
     def __init__(self, target_path):
@@ -25,39 +24,33 @@ class JackCompiler:
         vm_fns = []
 
         for jack_fn in self.jack_fns:
-            print(f"Compiling {jack_fn}") 
+            print(f"Compiling {jack_fn}")
 
             vm_dir = os.path.join(os.path.dirname(jack_fn), "vm")
             if not os.path.isdir(vm_dir):
                 os.mkdir(vm_dir)
             basename = os.path.basename(jack_fn).split(".")[0]
-            vm_fn = os.path.join(vm_dir, basename + ".vm")
 
             tokenizer = Tokenizer(jack_fn)
-            vm_writer = VMWriter(vm_fn)
-            compilation_engine = CompilationEngine(basename, tokenizer, vm_writer)
+            compilation_engine = CompilationEngine(tokenizer, basename, vm_dir)
 
-            # Writing the compiled .vm file
+            # Run compilation engine to generate XML parse tree and compiled VM code
             while tokenizer.has_more_tokens():
                 token, token_type = tokenizer.advance()
 
                 if token == "class":
                     compilation_engine.compile_class(token, token_type)
                 else:
-                    raise ValueError(
-                        'Expected Jack file with one class, got token "{token}" with '
-                        'type: "{token_type}"'
+                    raise SyntaxError(
+                        f'Expected Jack file with one class, got token "{token}" with '
+                        f'type: "{token_type}"'
                     )
 
-            vm_writer.close()
-            vm_fns.append(vm_fn)
+            # vm_writer.close()
+            # vm_fns.append(vm_fn)
 
-            parse_tree_fn = os.path.join(vm_dir, basename + '.xml')
+            parse_tree_fn = os.path.join(vm_dir, basename + ".xml")
             compilation_engine.wrtie_xml_file(parse_tree_fn)
-
-            # print(tokenizer.tokens)
-
-        return vm_fns
 
 
 if __name__ == "__main__":
@@ -70,7 +63,7 @@ if __name__ == "__main__":
 
     if args.jack_files:
         compiler = JackCompiler(args.jack_files)
-        vm_fns = compiler.compile()
+        compiler.compile()
     else:
-        print('Please provide one or more Jack files. See help below:\n')
+        print("Please provide one or more Jack files. See help below:\n")
         parser.print_help()
