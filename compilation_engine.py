@@ -390,11 +390,15 @@ class CompilationEngine:
         # lookup var
         var_kind, var_type, var_mem_index = self.symbol_table.lookup(var_name)
         var_mem_segment = self._get_mem_segment(var_kind)
-        # TODO: Deal with var_types that are stored on heap? Objects? Strings? Arrays?
 
         token, token_type = self.tokenizer.advance()
         # check for array indexing
+        is_array = False
         if token == "[":
+            is_array = True
+            # push base address of array onto stack
+            self.vm_writer.write_push(var_mem_segment, var_mem_index)
+
             self._create_tag(parent_tag, token_type, token)
             expression_tag = self._create_tag(parent_tag, "expression", None)
             token, token_type = self.tokenizer.advance()
@@ -402,12 +406,12 @@ class CompilationEngine:
                 expression_tag, token, token_type
             )
 
-            # ']' (end of array index)
+            # add indexing expression value to array base address
+            self.vm_writer.write_arithmetic("+")
+
+            # ']' (end of array indexing expression)
             self._create_tag(parent_tag, token_type, token)
             token, token_type = self.tokenizer.advance()
-
-            # TODO: Add some sort of offset to pointer of the base address of the array
-            # in order to access the approriate index?
 
         # '='
         self._create_tag(parent_tag, token_type, token)
@@ -421,8 +425,19 @@ class CompilationEngine:
         self._create_tag(parent_tag, token_type, token)
         token, token_type = self.tokenizer.advance()
 
-        # write expression value onto the address of the target variable
-        self.vm_writer.write_pop(var_mem_segment, var_mem_index)
+        if is_array:
+            # temporarily store value of right-hand expression
+            self.vm_writer.write_pop("temp", 0)
+            # update that pointer to address of index of the current array
+            self.vm_writer.write_pop("pointer", 1)
+            # push right-hand expression value back to stack
+            self.vm_writer.write_push("temp", 0)
+            # pop value into array
+            self.vm_writer.write_pop("that", 0)
+
+        else:
+            # write expression value onto the address of the target variable
+            self.vm_writer.write_pop(var_mem_segment, var_mem_index)
 
         return token, token_type
 
@@ -679,13 +694,28 @@ class CompilationEngine:
                 self._create_tag(term_tag, initial_token_type, initial_token)
                 self._create_tag(term_tag, token_type, token)
 
+                var_kind, var_type, var_mem_index = self.symbol_table.lookup(
+                    initial_token
+                )
+                var_mem_segment = self._get_mem_segment(var_kind)
+
+                # push base address of array onto the stack
+                self.vm_writer.write_push(var_mem_segment, var_mem_index)
+
                 expression_tag = self._create_tag(term_tag, "expression", None)
                 token, token_type = self.tokenizer.advance()
                 token, token_type = self.compile_expression(
                     expression_tag, token, token_type
                 )
 
-                # end of array indexing
+                # add indexing expression value to array base address
+                self.vm_writer.write_arithmetic("+")
+                # update that pointer to address of index of the current array
+                self.vm_writer.write_pop("pointer", 1)
+                # push that value onto stack
+                self.vm_writer.write_push("that", 0)
+
+                # ']' end of array indexing
                 self._create_tag(term_tag, token_type, token)
                 token, token_type = self.tokenizer.advance()
 
@@ -719,6 +749,8 @@ class CompilationEngine:
                 )
 
         elif token_type == "stringConstant":
+            self.vm_writer.write_string(token)
+
             self._create_tag(term_tag, token_type, token)
             token, token_type = self.tokenizer.advance()
 

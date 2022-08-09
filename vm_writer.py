@@ -85,6 +85,13 @@ class VMWriter:
             self.vm_lines.append("push constant 0")
         self.vm_lines.append("return")
 
+    def write_string(self, string: str):
+        self.write_push("constant", len(string))
+        self.write_call("String.new", 1)
+        for char in string:
+            self.write_push("constant", ord(char))
+            self.write_call("String.appendChar", 2)
+
     def close(self):
         if os.path.exists(self.vm_fn):
             print(f"Overwriting {self.vm_fn}")
