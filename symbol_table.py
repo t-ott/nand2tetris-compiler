@@ -41,12 +41,13 @@ class SymbolTable:
     def lookup(self, name: str) -> tuple:
         kind = self._kind_of(name)
         if kind is None:
-            # TODO: Define the symbol here or raise an var undefined error?
-            raise ValueError(f'Identifier "{name}" is not defined in the current scope')
-        type = self._type_of(name)
-        index = self._index_of(name)
-
-        return kind, type, index
+            # TODO: Define the symbol here?
+            # raise ValueError(f'Identifier "{name}" is not defined in the current scope')
+            return None, None, None
+        else:
+            type = self._type_of(name)
+            index = self._index_of(name)
+            return kind, type, index
 
     def var_count(self, kind: str) -> int:
         """

@@ -63,7 +63,21 @@ class VMWriter:
         self.vm_lines.append(f"call {name} {n_args}")
 
     def write_function(self, name: str, n_locals: int) -> None:
-        self.vm_lines.append(f"function {name} {n_locals}")
+        # deal with constructors
+        if name.endswith(".new"):
+            self.vm_lines.append(f"function {name} 0")
+
+            # TODO: Remove this print statement
+            # print(f"WARNING: Allocating {n_locals} fields for object. Is this correct?")
+
+            # allocate memory for appropriate number of object fields and pop
+            # base address of new object
+            self.write_push("constant", str(n_locals))
+            self.write_call("Memory.alloc", 1)
+            self.write_pop("pointer", 0)
+
+        else:
+            self.vm_lines.append(f"function {name} {n_locals}")
 
     def write_return(self, is_void=False):
         # TODO: Is the param is_void even necessary? Other way to tell if it's void?
@@ -78,3 +92,4 @@ class VMWriter:
 
         with open(self.vm_fn, "w") as f:
             f.write("\n".join(self.vm_lines))
+            f.write("\n")

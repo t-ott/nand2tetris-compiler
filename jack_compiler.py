@@ -21,8 +21,6 @@ class JackCompiler:
             raise ValueError("Target file is a not a jack file")
 
     def compile(self):
-        vm_fns = []
-
         for jack_fn in self.jack_fns:
             print(f"Compiling {jack_fn}")
 
@@ -45,9 +43,6 @@ class JackCompiler:
                         f'Expected Jack file with one class, got token "{token}" with '
                         f'type: "{token_type}"'
                     )
-
-            # vm_writer.close()
-            # vm_fns.append(vm_fn)
 
             parse_tree_fn = os.path.join(vm_dir, basename + ".xml")
             compilation_engine.wrtie_xml_file(parse_tree_fn)

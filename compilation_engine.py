@@ -19,7 +19,6 @@ class CompilationEngine:
         self.vm_writer = VMWriter(vm_fn)
 
         self.parse_tree_root = minidom.Document()
-        self.class_method_names = []
         self.vm_label_index = 0
 
     def _create_tag(self, parent_tag, child, child_text):
@@ -36,7 +35,8 @@ class CompilationEngine:
         if var_kind == "static":
             return var_kind
         elif var_kind == "field":
-            raise ValueError("Unimplemented")
+            # TODO: Or do we sometimes want to return "that"?
+            return "this"
         elif var_kind == "arg":
             return "argument"
         elif var_kind == "var":
@@ -59,8 +59,14 @@ class CompilationEngine:
         self._create_tag(class_tag, token_type, token)
 
         # className
-        token, token_type = self.tokenizer.advance()
-        self._create_tag(class_tag, token_type, token)
+        class_name, token_type = self.tokenizer.advance()
+        self._create_tag(class_tag, token_type, class_name)
+
+        if class_name != self.basename:
+            raise SyntaxError(
+                f"File {self.basename}.jack must contain class with name "
+                f"{self.basename}"
+            )
 
         # '{'
         token, token_type = self.tokenizer.advance()
@@ -126,10 +132,17 @@ class CompilationEngine:
 
         self.symbol_table.start_subroutine()
 
-        if subroutine_type == "function" or subroutine_type == "method":
+        if subroutine_type == "function":
             # type
             return_type, token_type = self.tokenizer.advance()
             self._create_tag(subroutine_tag, token_type, return_type)
+        elif subroutine_type == "method":
+            # type
+            return_type, token_type = self.tokenizer.advance()
+            self._create_tag(subroutine_tag, token_type, return_type)
+
+            # add "this" as arg 0 for method, reference to current object
+            self.symbol_table.define("this", self.basename, "arg")
         elif subroutine_type == "constructor":
             # className
             class_name, token_type = self.tokenizer.advance()
@@ -138,9 +151,6 @@ class CompilationEngine:
         # subroutineName
         subroutine_name, token_type = self.tokenizer.advance()
         self._create_tag(subroutine_tag, token_type, subroutine_name)
-
-        if subroutine_type == "method":
-            self.class_method_names.append(subroutine_name)
 
         # '('
         token, token_type = self.tokenizer.advance()
@@ -174,7 +184,23 @@ class CompilationEngine:
 
         # TODO: This probably won't work correctly for writing constructors. Or methods?
         # Need to add reference to self as another "local"
+        if subroutine_type == "method":
+            # n_locals += 1
+            # TODO: Need to do something else for methods?
+            pass
+        elif subroutine_type == "constructor":
+            # TODO: Think of better variable naming here. There are not locals but
+            # rather the number of fields an object has
+            n_locals = self.symbol_table.field_index
+            # n_locals = 0
+            # TODO: Or... should this be n_parameters for the constructor function?
+
         self.vm_writer.write_function(self.basename + "." + subroutine_name, n_locals)
+
+        if subroutine_type == "method":
+            # push reference to current object onto stack
+            self.vm_writer.write_push("argument", 0)
+            self.vm_writer.write_pop("pointer", 0)
 
         # statement
         statements_tag = self._create_tag(subroutine_body_tag, "statements", None)
@@ -284,8 +310,14 @@ class CompilationEngine:
         token, token_type = self.tokenizer.advance()
         self._create_tag(parent_tag, token_type, token)
 
+        n_arguments = 0
+
         if token == "(":
+            # call to a method of current class
             function_call_name = self.basename + "." + subroutine_name
+
+            self.vm_writer.write_push("pointer", 0)
+            n_arguments += 1
 
             # start expressionList
             token, token_type = self.tokenizer.advance()
@@ -293,9 +325,26 @@ class CompilationEngine:
             token, token_type, n_expressions = self.compile_expression_list(
                 expression_list_tag, token, token_type
             )
+            n_arguments += n_expressions
+
         elif token == ".":
             # subroutine_name was actually name of a class
-            class_name = subroutine_name
+            object_name = subroutine_name
+            object_kind, object_type, object_index = self.symbol_table.lookup(
+                object_name
+            )
+            if object_type is not None:
+                # This is call to a method of an instance of a class
+                class_name = object_type
+
+                # Push object base address to stack
+                object_pointer_mem_segment = self._get_mem_segment(object_kind)
+                self.vm_writer.write_push(object_pointer_mem_segment, object_index)
+                # will need to call method with at least one argument (self)
+                n_arguments += 1
+            else:
+                # This is a call to a class function/constructor
+                class_name = object_name
 
             # subroutineName
             subroutine_name, token_type = self.tokenizer.advance()
@@ -314,6 +363,8 @@ class CompilationEngine:
                 expression_list_tag, token, token_type
             )
 
+            n_arguments += n_expressions
+
         # ')' (end of expressionList)
         self._create_tag(parent_tag, token_type, token)
 
@@ -321,9 +372,8 @@ class CompilationEngine:
         token, token_type = self.tokenizer.advance()
         self._create_tag(parent_tag, token_type, token)
 
-        if subroutine_name in self.class_method_names:
-            raise ValueError("Need to push reference to current object onto stack")
-        self.vm_writer.write_call(function_call_name, n_expressions)
+        self.vm_writer.write_call(function_call_name, n_arguments)
+        # void functions/methods return 0, dump this value onto temp
         self.vm_writer.write_pop("temp", 0)
 
         token, token_type = self.tokenizer.advance()
@@ -377,8 +427,6 @@ class CompilationEngine:
         return token, token_type
 
     def compile_while(self, parent_tag, token, token_type):
-        # TODO: Implement program flow for while statements with labels, if-goto, etc.
-
         # generate vm labels for while loop
         loop_label = self._get_vm_label("WHILE_LOOP")
         exit_label = self._get_vm_label("WHILE_EXIT")
@@ -578,10 +626,29 @@ class CompilationEngine:
             token, token_type = self.tokenizer.advance()
 
             if token == ".":
-                # is a subroutine call
-                class_name = initial_token
-                self._create_tag(term_tag, initial_token_type, class_name)
+                # is a subroutine call for a built-in class or instance of a class
+                object_name = initial_token
+                self._create_tag(term_tag, initial_token_type, object_name)
                 self._create_tag(term_tag, token_type, token)
+
+                n_arguments = 0
+
+                object_kind, object_type, object_index = self.symbol_table.lookup(
+                    object_name
+                )
+                if object_type is not None:
+                    # This is call to a method of an instance of a class
+                    class_name = object_type
+
+                    # Push object base address to stack
+                    object_pointer_mem_segment = self._get_mem_segment(object_kind)
+                    self.vm_writer.write_push(object_pointer_mem_segment, object_index)
+
+                    # will need to call method with at least one argument (self)
+                    n_arguments += 1
+                else:
+                    # This is a call to a class function/constructor
+                    class_name = object_name
 
                 # subroutine name
                 subroutine_name, token_type = self.tokenizer.advance()
@@ -597,16 +664,14 @@ class CompilationEngine:
                     expression_list_tag, token, token_type
                 )
 
+                n_arguments += n_expressions
+
                 # ')' (end of expression list)
                 self._create_tag(term_tag, token_type, token)
                 token, token_type = self.tokenizer.advance()
 
-                if subroutine_name in self.class_method_names:
-                    raise ValueError(
-                        "Need to push reference to current object onto stack"
-                    )
                 self.vm_writer.write_call(
-                    class_name + "." + subroutine_name, n_expressions
+                    class_name + "." + subroutine_name, n_arguments
                 )
 
             elif token == "[":
@@ -668,6 +733,8 @@ class CompilationEngine:
                 self.vm_writer.write_unary_arithmetic("~")
             elif token == "false":
                 self.vm_writer.write_push("constant", 0)
+            elif token == "this":
+                self.vm_writer.write_push("pointer", 0)
             else:
                 raise ValueError(f"Unimplemented KEYWORD_CONSTANT: {token}")
 
