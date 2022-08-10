@@ -767,8 +767,8 @@ class CompilationEngine:
                 self.vm_writer.write_push("constant", 0)
             elif token == "this":
                 self.vm_writer.write_push("pointer", 0)
-            else:
-                raise ValueError(f"Unimplemented KEYWORD_CONSTANT: {token}")
+            elif token == "null":
+                self.vm_writer.write_push("constant", 0)
 
             self._create_tag(term_tag, token_type, token)
             token, token_type = self.tokenizer.advance()
