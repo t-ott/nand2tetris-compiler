@@ -10,13 +10,16 @@ KEYWORD_CONSTANTS = ["true", "false", "null", "this"]
 
 
 class CompilationEngine:
-    def __init__(self, tokenizer, basename, vm_dir):
+    def __init__(self, tokenizer, basename, vm_dir, write_symbol_tables):
         self.tokenizer = tokenizer
         self.basename = basename
         self.vm_dir = vm_dir
+        self.write_symbol_tables = write_symbol_tables
 
         vm_fn = os.path.join(vm_dir, basename + ".vm")
         self.vm_writer = VMWriter(vm_fn)
+
+        self.symbol_table_dir = os.path.join(vm_dir, "symbol_tables")
 
         self.parse_tree_root = minidom.Document()
         self.vm_label_index = 0
@@ -82,10 +85,12 @@ class CompilationEngine:
 
         self._create_tag(class_tag, token_type, token)
 
-        self.symbol_table.write_symbol_tables(
-            os.path.join(self.vm_dir, "symbol_tables")
-        )
+        if self.write_symbol_tables:
+            self.symbol_table.write_class_table(
+                self.symbol_table_dir, self.basename
+            )
 
+        # close vm writer and write vm code to text file
         self.vm_writer.close()
 
     def compile_class_var_dec(self, class_tag, token, token_type):
@@ -159,9 +164,6 @@ class CompilationEngine:
         # Add empty text to tag to force minidom to create closing tag
         parameter_list_tag = self._create_tag(subroutine_tag, "parameterList", "")
 
-        # TODO: Is n_parameters actually needed? Unless want to handle errors for
-        # incorrect number of args passed to a function?
-
         # zero or more parameters
         token, token_type = self.tokenizer.advance()
         token, token_type, n_parameters = self.compile_parameter_list(
@@ -182,18 +184,10 @@ class CompilationEngine:
             subroutine_body_tag, token, token_type
         )
 
-        # TODO: This probably won't work correctly for writing constructors. Or methods?
-        # Need to add reference to self as another "local"
-        if subroutine_type == "method":
-            # n_locals += 1
-            # TODO: Need to do something else for methods?
-            pass
-        elif subroutine_type == "constructor":
+        if subroutine_type == "constructor":
             # TODO: Think of better variable naming here. There are not locals but
             # rather the number of fields an object has
             n_locals = self.symbol_table.field_index
-            # n_locals = 0
-            # TODO: Or... should this be n_parameters for the constructor function?
 
         self.vm_writer.write_function(self.basename + "." + subroutine_name, n_locals)
 
@@ -208,6 +202,11 @@ class CompilationEngine:
 
         # '}' (end of subroutineBody)
         self._create_tag(subroutine_body_tag, token_type, token)
+
+        if self.write_symbol_tables:
+            self.symbol_table.write_subroutine_table(
+                self.symbol_table_dir, self.basename, subroutine_name
+            )
 
         token, token_type = self.tokenizer.advance()
         return token, token_type
@@ -547,15 +546,10 @@ class CompilationEngine:
 
         # skip past else statement, if present
         self.vm_writer.write_goto(exit_label)
-
-        token, token_type = self.tokenizer.advance()
-
-        # TODO: Is there a more clever way to do this? sometimes will have back to
-        # back labels here
-
         # write else label to vm code, regardless of else presence/absence
         self.vm_writer.write_label(else_label)
 
+        token, token_type = self.tokenizer.advance()
         if token == "else":
             # else branch of ifStatement
             self._create_tag(parent_tag, token_type, token)

@@ -41,8 +41,7 @@ class SymbolTable:
     def lookup(self, name: str) -> tuple:
         kind = self._kind_of(name)
         if kind is None:
-            # TODO: Define the symbol here?
-            # raise ValueError(f'Identifier "{name}" is not defined in the current scope')
+            # identifier is undefined
             return None, None, None
         else:
             type = self._type_of(name)
@@ -98,12 +97,16 @@ class SymbolTable:
                 "current scope"
             )
 
-    def write_symbol_tables(self, dir: str) -> None:
-        """Wrtie symbol tables as strings to .txt files"""
+    def write_class_table(self, dir: str, class_name: str) -> None:
+        """Write class symbol table as strings to .txt file"""
         if not os.path.isdir(dir):
             os.mkdir(dir)
-
-        with open(os.path.join(dir, "class_table.txt"), "w") as f:
+        with open(os.path.join(dir, f"{class_name}.txt"), "w") as f:
             f.write(json.dumps(self.class_table, indent=2))
-        with open(os.path.join(dir, "subroutine_table.txt"), "w") as f:
-            f.write(json.dumps(self.subroutine_table, indent=2))
+
+    def write_subroutine_table(self, dir: str, class_name: str, subroutine_name: str) -> None:
+        """Write subroutine symbol table as strings to .txt file"""
+        if not os.path.isdir(dir):
+            os.mkdir(dir)
+        with open(os.path.join(dir, f"{class_name}.{subroutine_name}.txt"), "w") as f:
+            f.write(json.dumps(self.subroutine_table, indent=2)) 

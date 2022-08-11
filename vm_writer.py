@@ -67,9 +67,6 @@ class VMWriter:
         if name.endswith(".new"):
             self.vm_lines.append(f"function {name} 0")
 
-            # TODO: Remove this print statement
-            # print(f"WARNING: Allocating {n_locals} fields for object. Is this correct?")
-
             # allocate memory for appropriate number of object fields and pop
             # base address of new object
             self.write_push("constant", str(n_locals))
@@ -80,7 +77,6 @@ class VMWriter:
             self.vm_lines.append(f"function {name} {n_locals}")
 
     def write_return(self, is_void=False):
-        # TODO: Is the param is_void even necessary? Other way to tell if it's void?
         if is_void:
             self.vm_lines.append("push constant 0")
         self.vm_lines.append("return")
@@ -93,6 +89,7 @@ class VMWriter:
             self.write_call("String.appendChar", 2)
 
     def close(self):
+        """Write vm code to output text file"""
         if os.path.exists(self.vm_fn):
             print(f"Overwriting {self.vm_fn}")
             os.remove(self.vm_fn)

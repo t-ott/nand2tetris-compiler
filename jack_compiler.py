@@ -6,7 +6,8 @@ from tokenizer import Tokenizer
 
 
 class JackCompiler:
-    def __init__(self, target_path):
+    def __init__(self, target_path: str, write_symbol_tables: bool):
+        self.write_symbol_tables = write_symbol_tables
         if os.path.isdir(target_path):
             self.jack_fns = [
                 os.path.join(target_path, fn)
@@ -30,7 +31,9 @@ class JackCompiler:
             basename = os.path.basename(jack_fn).split(".")[0]
 
             tokenizer = Tokenizer(jack_fn)
-            compilation_engine = CompilationEngine(tokenizer, basename, vm_dir)
+            compilation_engine = CompilationEngine(
+                tokenizer, basename, vm_dir, self.write_symbol_tables
+            )
 
             # Run compilation engine to generate XML parse tree and compiled VM code
             while tokenizer.has_more_tokens():
@@ -54,10 +57,15 @@ if __name__ == "__main__":
         "jack_files",
         help="Jack file (with .jack extension) or directory containing Jack files",
     )
+    parser.add_argument(
+        "--sym",
+        help="Write symbol tables to text",
+        action="store_true"
+    )
     args = parser.parse_args()
 
     if args.jack_files:
-        compiler = JackCompiler(args.jack_files)
+        compiler = JackCompiler(args.jack_files, args.sym)
         compiler.compile()
     else:
         print("Please provide one or more Jack files. See help below:\n")
