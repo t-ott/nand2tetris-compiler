@@ -19,9 +19,6 @@ class SymbolTable:
         running index. STATIC and FIELD identifiers have a class scope, while ARG and
         VAR identifiers have a subroutine scope
         """
-
-        # print(f"Defining symbol with name: {name} ; type: {type} ; kind: {kind}")
-
         if kind == "static":
             self.class_table[name] = (kind, type, self.static_index)
             self.static_index += 1
